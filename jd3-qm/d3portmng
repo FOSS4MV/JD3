@@ -1,0 +1,464 @@
+*
+* D3Portmng : The program that manages load, and timeouts processes
+* Copyright (c) 2000 Christophe Marchal
+*
+* This program is free software; you can redistribute it and/or
+* modify it under the terms of the GNU General Public License
+* as published by the Free Software Foundation; either version 2
+* of the License, or any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* along with this program; if not, write to the Free Software
+* Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+*
+
+*----------------------------------------------------------------------*
+* Management of load and clean up of hung ports
+*
+* Marc Dubois
+*    Aug, 2003
+*
+* Version 0.10
+*----------------------------------------------------------------------*
+
+include equates
+
+*---------------------------------------------------------------------
+* Init equates and variables
+*---------------------------------------------------------------------
+* Default value for the server port
+equ WELL.KNOWN.PORT to 20002
+
+* Default value for the starting child port
+equ CHILD.PORTS TO 30000
+
+* Default value for the number of child
+equ PHANTOMS to 2
+
+* Number of try to get a free port
+equ MAXTRY to 5
+
+equ am to char(254), vm to char(253), esc to char(27)
+
+my.port = SYSTEM(18)
+buffer = space(10)
+configFile = 1
+logMngt = 1
+logNo = 0
+
+*---------------------------------------------------------------------
+* Get TCL parameters
+*---------------------------------------------------------------------
+tclread tcl.com
+convert ' ' to am in tcl.com
+
+* Find the port for the server
+locate('-port',tcl.com;pos.port) then
+   ser.port = tcl.com<pos.port + 1> + 0
+end else
+   stop "No server port found."
+end
+
+server.pid = ""
+locate('-s',tcl.com;pos) then
+   server.pid = tcl.com<pos + 1>
+end else
+   stop "No server pid port found."
+end
+
+* Fix the debug flag
+debug = 0
+locate('-d',tcl.com;pos.debug) then
+   debug = 1
+end
+
+*---------------------------------------------------------------------
+* Open files
+*---------------------------------------------------------------------
+open JD3.FJ.PORTS to F.PORTS else 
+   gosub 999; *  Reset
+   stop "D3PortMng : error opening file ":JD3.FJ.PORTS 
+end
+
+open JD3.FJ.CONFIG to F.CONFIG else 
+   configFile = 0
+end
+
+open JD3.FJ.MNGT to F.MNG else 
+   logMngt = 0
+end
+
+*---------------------------------------------------------------------
+* Setup default from parameters in the Config file
+*---------------------------------------------------------------------
+read config.rec from F.CONFIG, ser.port else
+   gosub 999; *  Reset
+   stop "No configuration record found for server: ":ser.port
+end
+
+nbchild = config.rec<1>; * Number of children to start
+childport = config.rec<2>; * Start port no. (for children)
+minChild = config.rec<3>; * Minimum number of children
+maxChild = config.rec<4>; * Maximum number of children
+maxProcTime = config.rec<5> * 60; * Maximum number of minutes to allow any process
+maxIdleTime = config.rec<6> * 60; * Maximum idle minutes for any process (before it is stopped)
+maxPortCnt = config.rec<7>; * Maximum unreleased ports to avoid (D3NT problem)
+mngmntInt = config.rec<8> * 60; * Interval time in minutes between port management calls
+
+*---------------------------------------------------------------------
+* Validate parameters
+*---------------------------------------------------------------------
+if nbchild <= 0 then
+   gosub 999; *  Reset
+   stop "No child to start"
+end
+
+if childport <= 0 then
+   gosub 999; *  Reset
+   stop 'Child port incorrect ':childport
+end
+
+* Make life easy
+childport = childport - 1
+
+
+*---------------------------------------------------------------------
+* Log entry in F.MNG file
+*---------------------------------------------------------------------
+if logMngt then
+   read logNo from F.MNG, 0 else
+      write 0 on F.MNG, 0
+   end
+   logNo += 1
+   write logNo on F.MNG, 0
+
+   logKey = logNo"R(%4)"
+   logRec = ''
+   logRec<1> = ser.port
+   logRec<2> = date()
+   logRec<3> = time()
+   logRec<4> = "Mng start"
+   write logRec on F.MNG, logKey
+end
+
+try = 0
+next.port = ""
+free.ports = ""
+
+*---------------------------------------------------------------------
+* get list of ports
+*---------------------------------------------------------------------
+loop until free.ports <> "" do
+   try += 1
+   if try > MAXTRY then
+      exit
+   end
+
+   readu free.ports from F.PORTS, server.pid locked
+   free.ports = ""
+SLEEP 1
+  END ELSE  
+  NULL  
+end
+repeat
+
+if free.ports <> "" then
+
+* Make sure busy indicator is set
+if free.ports<13> = 0 then
+   writev 1 on F.PORTS,server.pid,13
+end
+gosub 10
+if logMngt then
+   msg = "Mng process successful."
+   if logMngt then
+      writev msg on F.MNG, logKey, 4
+   end
+end
+end else
+if logMngt then
+   msg = "Server record locked."
+   if logMngt then
+      writev msg on F.MNG, logKey, 4
+   end
+end
+end
+
+*---------------------------------------------------------------------
+* End of port management
+*---------------------------------------------------------------------
+
+if debug then print "End of D3portmng."
+stop
+
+
+10
+
+* Init phantom parameters
+
+currChildCnt = dcount(free.ports<8>,@vm); * get number of child processes
+origChildCnt = currChildCnt
+tabCnt = 0
+pibsTab = ''
+portTab = ''
+pibsStatTab = ''
+tabCn1 = 0
+inProcCnt = 0
+idleCnt = 0
+
+jUser = free.ports<7>
+
+for cpt.free = 1 to currChildCnt
+IF 3 = 4 THEN
+*if oconv(free.ports<6,cpt.free>,"TPIBS;X;;7") # "" then
+
+   readv childStartProcTime from F.PORTS,free.ports<6,cpt.free>,10 ELSE NULL
+
+   tt = field(childStartProcTime,'#',1)
+   dd = field(childStartProcTime,'#',2)
+   dayDiff = date() - dd
+   actualTime = time() + (dayDiff * 86400)
+   timeDiff = actualTime - tt
+
+   if free.ports<8,cpt.free> = "" then
+
+* Check processing time elapsed
+      if timeDiff > maxProcTime then
+         tabCnt += 1
+         pibsTab<1,tabCnt> = free.ports<6,cpt.free>
+         portTab<1,tabCnt> = free.ports<11,cpt.free>
+         pibsStatTab<1,tabCnt> = "P"
+      end else
+         inProcCnt +=1
+      end
+   end else
+
+* check idle time
+      if timeDiff > maxIdleTime then
+         tabCnt += 1
+         pibsTab<1,tabCnt> = free.ports<6,cpt.free>
+         portTab<1,tabCnt> = free.ports<11,cpt.free>
+         pibsStatTab<1,tabCnt> = "I"
+         idleCnt +=1
+      end
+   end
+end else
+   tabCnt += 1
+   pibsTab<1,tabCnt> = free.ports<6,cpt.free>
+   portTab<1,tabCnt> = free.ports<11,cpt.free>
+   pibsStatTab<1,tabCnt> = "D"
+end
+next cpt.free
+
+*---------------------------------------------------------------------
+* Problems ?
+*---------------------------------------------------------------------
+inProcDel = 0
+probCnt = dcount(pibsTab,@vm)
+for prob = 1 to probCnt
+if pibsStatTab<1,prob> = "D" or pibsStatTab<1,prob> = "P" then
+   locate(pibsTab<1,prob>,free.ports<6>,1;pos) then
+      free.ports<6> = delete(free.ports<6>,1,pos,0)
+      free.ports<8> = delete(free.ports<8>,1,pos,0)
+      free.ports<11> = delete(free.ports<11>,1,pos,0)
+      currChildCnt -= 1
+      inProcDel += 1
+   end
+end
+next prob
+
+*---------------------------------------------------------------------
+* Do we need to end/stop excess idle child processes?
+*---------------------------------------------------------------------
+
+idleDel = 0
+for prob = probCnt to 1 step -1
+if pibsStatTab<1,prob> = "I" then
+   if (inProcCnt + 2) < currChildCnt then
+      locate(pibsTab<1,prob>,free.ports<6>,1;pos) then
+         free.ports<6> = delete(free.ports<6>,1,pos,0)
+         free.ports<8> = delete(free.ports<8>,1,pos,0)
+         free.ports<11> = delete(free.ports<11>,1,pos,0)
+         pibsStatTab<1,prob> = "M"
+         currChildCnt -= 1
+         idleDel += 1
+      end
+   end
+end
+next prob
+
+write free.ports on F.PORTS, server.pid
+
+release F.PORTS,server.pid
+
+gosub 400
+
+*---------------------------------------------------------------------
+* Do we need to launch more child processes?
+*---------------------------------------------------------------------
+addChild = 0
+chrono = 0
+if currChildCnt < minChild then
+for newChild = (currChildCnt + 1) to minChild
+   gosub 90 ; * get next.port
+   gosub 100
+   currChildCnt += 1
+   addChild += 1
+next newChild
+end
+
+if (inProcCnt + 2) > currChildCnt then
+if maxChild > (inProcCnt + 2) then maxLaunch = (inProcCnt + 2) else maxLaunch = maxChild
+for newChild = currChildCnt + 1 to maxLaunch
+   gosub 90 ; * get next.port
+   gosub 100
+   currChildCnt += 1
+   addChild += 1
+next newChild
+end
+
+if logMngt then
+logRec<5> = origChildCnt
+logRec<6> = inProcCnt
+logRec<7> = idleCnt
+logRec<8> = inProcDel
+logRec<9> = idleDel
+logRec<10> = addChild
+write logRec on F.MNG, logKey
+end
+
+gosub 999; * Reset
+
+return
+
+400
+*---------------------------------------------------------------------
+* Signal/End/Logoff processes
+*---------------------------------------------------------------------
+probCnt = dcount(pibsTab,@vm)
+
+if debug then
+print 'Signal/End/Logoff processes...'
+print 'probCnt = ':probCnt
+print 'pibsStatTab = ':pibsStatTab
+print 'portTab = ':portTab
+print 'pibsTab = ':pibsTab
+end
+
+for prob = 1 to probCnt
+if pibsStatTab<1,prob> = "M" then
+   d.port = portTab<1,prob> + 0
+   d.pib = pibsTab<1,prob>
+   gosub 300; 
+end
+next prob
+for prob = 1 to probCnt
+if pibsStatTab<1,prob> = "P" or pibsStatTab<1,prob> = "D" then
+   d.port = portTab<1,prob> + 0
+   d.pib = pibsTab<1,prob>
+   gosub 300; 
+end
+next prob
+
+
+return
+
+*---------------------------------------------------------------------
+* Get next.port to start a d3client process
+*---------------------------------------------------------------------
+90
+
+ chrono += 1
+ next.port = childport + chrono
+ locate(next.port,portTab,1;pos) then go 90
+ locate(next.port,free.ports,8;pos) then go 90
+ locate(next.port,free.ports,11;pos) then go 90
+
+return
+*---------------------------------------------------------------------
+* Start a thread as a phantom
+*---------------------------------------------------------------------
+100
+orig.line = 'D3CLIENT -port ':next.port:' -s ':server.pid
+
+
+
+
+* this oconv start the phantom
+EXECUTE "PHANTOM ":orig.line 
+
+return
+
+*-----------------------------------------------------------------------
+* Init for the phantom parameters
+*-----------------------------------------------------------------------
+200
+opts = 'sm'
+zline = ''
+leg = ''
+thdr = ''
+cs = 'case (fs'
+
+term = oconv('','u4')
+pterm = term<3>:',':term<5>
+term = delete(term,3)
+term = delete(term,4)
+convert am to ',' in term
+term = 'term ':term:pterm
+
+queue = system(31)
+assignment = 'sp-assign f':queue:'hs'
+
+user.line = oconv('p','U50BB')
+cur.user = oconv('u','U50BB')
+cur.md = oconv('a','U50BB')
+
+if count(cur.user,'*') then cur.user = field(cur.user,'*',1)
+user.id = cur.user
+passwd = esc
+md.id = cur.md
+mdpasswd = esc
+
+return
+
+
+*-----------------------------------------------------------------------
+* Stop processes
+*-----------------------------------------------------------------------
+300
+
+* Create socket
+
+* Connect to port
+d.sock = OPEN.SOCKET('localhost', d.port, 1)
+IF STATUS() THEN  
+goto 399
+end
+
+buffer = CP.SHUTDOWN.AMC"R(%8)"
+SRES = WRITE.SOCKET(d.sock, buffer, 0, 0)  
+
+399
+   CLOSE.SOCKET d.sock  
+
+sleep .3
+execute "end ":d.pib:" ":jUser capturing cap
+if debug then print " Logging off (child) on ":d.pib:" .... ":
+execute "logoff ":d.pib capturing cap
+if debug then print "done."
+
+return
+
+
+999
+* Write the time D3Portmng ended and reset 'busy' indicator
+writev time() on F.PORTS,server.pid,12
+writev 0 on F.PORTS,server.pid,13
+
+return
+end

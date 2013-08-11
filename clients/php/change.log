@@ -1,0 +1,13 @@
+version 0.8 :
+  - In the php 4.3 branch, fread couldn't get long data chains. Implementation of a new way to get data by 2048 bytes packets.
+  This modification doesn't affect functions usage and is backward compatible with previous php version
+  
+version 0.7.1 :
+  - Bug in fgets with previous version of php corrected in php 4.3, which means that version 0.7 doesn't work with php 4.3
+  - This release is compatible with php 4.3 and previous releases of php
+  
+version 0.7 :
+  - New get server status option, returns j-status -f result
+  
+version 0.6 :
+  - Add management of the return flag(-1) on no d3client available

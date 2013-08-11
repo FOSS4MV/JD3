@@ -1,0 +1,244 @@
+*
+* J-MNG : Lists the Port Management log by server.
+* Copyright (c) 2000 Christophe Marchal
+*
+* This program is free software; you can redistribute it and/or
+* modify it under the terms of the GNU General Public License
+* as published by the Free Software Foundation; either version 2
+* of the License, or any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* along with this program; if not, write to the Free Software
+* Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+*
+
+*----------------------------------------------------------------------*
+*
+*   Command line is : j-mng  [-s xxxx] [-p] [-c] [-h]
+*
+*   parameters : -s xxxx    : server port numberd
+*                -p         : show the parameters
+*                -c         : clear log
+*                -h         : see help
+*
+* Marc Dubois
+*    August, 2003
+*
+* Version 0.10
+*----------------------------------------------------------------------*
+include equates
+
+* Configuration file
+dim configRec(15)
+mat configRec = ''
+
+equ conNbchild to configRec(1); * Number of children to start
+equ conChildport to configRec(2); * Start port no. (for children)
+equ conMinChild to configRec(3); * Minimum number of children
+equ conMaxChild to configRec(4); * Maximum number of children
+equ conMaxProcTime to configRec(5); * Maximum number of minutes to allow any process
+equ conMaxIdleTime to configRec(6); * Maximum idle minutes for any process (before it is stopped)
+equ conMaxPortCnt to configRec(7); * Maximum unreleased ports to avoid (D3NT problem)
+equ conMngmntInt to configRec(8); * Interval time in minutes between port management calls
+
+* Port Management Log file
+dim logRec(15)
+mat logRec = ''
+
+equ logSerPort to logRec(1); * Server Port number
+equ logDate to logRec(2); * Date of log
+equ logTime to logRec(3); * Time of log
+equ logMsg to logRec(4); * Message
+equ logOrigChildCnt to logRec(5); * Current number of processes
+equ logInProcCnt to logRec(6); * Current number of 'busy' processes
+equ logIdleCnt to logRec(7); * Current number of 'idle' processes
+equ logInProcDel to logRec(8); * Number of 'busy' processes stopped
+equ logIdleDel to logRec(9); * Number of 'idle' processes stopped
+equ logAddChild to logRec(10); * Number od New processes launched
+
+logMngt = 1
+savSerPort = ''
+
+*---------------------------------------------------------------------
+* Get TCL parameters
+*---------------------------------------------------------------------
+tclread tcl.com
+convert ' ' to @am in tcl.com
+
+* Show help if asked
+locate('-h',tcl.com;pos.help) then
+   gosub help
+   stop
+end
+
+* Find the port for the server
+locate('-s',tcl.com;pos.port) then
+   ser.port = tcl.com<pos.port + 1> + 0
+end else
+   ser.port = 'all'
+end
+
+* Set show parameters indicator
+showParameters = 0
+locate('-p',tcl.com;pos.clear) then
+   showParameters = 1
+end
+
+* Set clear indicator
+clearLog = 0
+locate('-c',tcl.com;pos.clear) then
+   clearLog = 1
+end
+
+*---------------------------------------------------------------------
+* Open files
+*---------------------------------------------------------------------
+
+open JD3.FJ.MNGT to F.MNG else
+   stop 'This installation has not been setup to log Port Management entries.'
+end
+
+open JD3.FJ.CONFIG to F.CONFIG else
+   stop 'This installation has not been setup to log Port Management entries.'
+end
+
+*---------------------------------------------------------------------
+
+100
+
+*   if showParameters then
+*      gosub 400
+*      goto 150
+*   end
+
+stmnt = 'sselect ':JD3.FJ.MNGT:' by A1 by A0 with A0 # "0"'
+if ser.port <> 'all' then
+   stmnt := ' and with A1 = "':ser.port:'"'
+end
+execute stmnt capturing CAP returning RTN
+
+if RTN[1,3] = 401 then
+   stop 'No records found.'
+end
+
+loop
+   readnext id else
+      exit
+   end
+
+   validRead = 1
+   matRead logRec from F.MNG, id else
+      crt 'Invalid read key - ':id
+      validRead = 0
+   end
+   if validRead then
+
+      if logSerPort <> savSerPort then
+         gosub 400; * Heading
+         savSerPort = logSerPort
+      end
+
+      print oconv(logDate,"d2/"):
+      print '  ':oconv(logTime,"mts"):
+      print '  ':logMsg"L(#19)":
+      print '  ':logOrigChildCnt"R(#3)":
+      print '    ':logInProcCnt"R(#3)":
+      print '    ':logIdleCnt"R(#3)":
+      print '    ':logInProcDel"R(#3)":
+      print '    ':logIdleDel"R(#3)":
+      print '    ':logAddChild"R(#3)"
+
+   end
+repeat
+
+150
+
+if clearLog then
+   print
+   print 'Are you sure you want to clear the log (y/n) ':
+   input ans
+   if ans = "y" then
+      cStmnt = stmnt
+      cStmnt<2> = "delete FJ.MNGT"
+      execute cStmnt capturing CAP
+   end
+end
+
+*---------------------------------------------------------------------
+* End of program
+*---------------------------------------------------------------------
+
+stop
+
+*---------------------------------------------------------------------
+* List Heading
+*---------------------------------------------------------------------
+400
+
+if showParameters then
+   gosub 500; * read server configuration record
+   print
+   print 'Parameters used for Port Management:'
+   print '------------------------------------'
+   print 'Number of children to start:  ':conNbchild
+   print 'Start port no. (for children):  ':conChildport
+   print 'Minimum number of children:  ':conMinChild
+   print 'Maximum number of children:  ':conMaxChild
+   print 'Maximum number of minutes to allow any process:  ':conMaxProcTime
+   print 'Maximum idle minutes for any process (before it is stopped):  ':conMaxIdleTime
+   print 'Maximum unreleased ports to avoid (D3NT problem):  ':conMaxPortCnt
+   print 'Interval time in minutes between port management calls:  ':conMngmntInt
+
+*      goto 499
+
+end
+
+print
+print 'Port Management Log:'
+print '-------------------------------------------------------- Ports -----------------'
+print '  Date     Time      Message            Count  Busy   Idle   Del(B)  Del(I)  New'
+print '--------------------------------------------------------------------------------'
+*         99/99/99  99:99:99  xxxxxxxxxxxxxxxxxxx  999    999    999    999     999    999
+
+print 'Server Port: ':logSerPort
+
+499
+return
+
+
+*---------------------------------------------------------------------
+* Get server parameters
+*---------------------------------------------------------------------
+500
+matRead configRec from F.CONFIG, logSerPort else
+   stop 'This installation has not been setup to log Port Management entries.'
+end
+
+conMaxProcTime = conMaxProcTime
+conMaxIdleTime = conMaxIdleTime
+conMngmntInt = conMngmntInt
+
+return
+
+*------------------------------------------------------------------------
+* Show help with all options available
+*------------------------------------------------------------------------
+help:  ; 
+print
+print "   Command line is : j-mng [-s xxxx] [-p] [-c] [-h]"
+print
+print "   parameters : -s xxxx : server port number"
+print "                -p      : show the parameters"
+print "                -c      : clear log"
+print "                -h      : see this help message"
+print
+
+return
+
+
+end

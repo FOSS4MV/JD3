@@ -1,0 +1,162 @@
+*
+* J-CONFIG :  Create config file and needed files for jd3 to run
+* Copyright (c) 2003 Cedric Fontaine
+*
+* This program is free software; you can redistribute it and/or
+* modify it under the terms of the GNU General Public License
+* as published by the Free Software Foundation; either version 2
+* of the License, or any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* along with this program; if not, write to the Free Software
+* Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+*
+*--------------------------------------------------------------------------
+*
+*
+* Cedric Fontaine
+* August 2003
+* Version 0.10
+*----------------------------------------------------------------------*
+include equates
+
+equ am to char(254)
+equ vm to char(253)
+*----------------------------------------------------------------------*
+
+*----------------------------------------------------------------------*
+* Open files and create them if don't exist
+*----------------------------------------------------------------------*
+
+10 *
+open JD3.FJ.PORTS to F.PORTS else
+   execute "CREATE.FILE ":JD3.FJ.PORTS CAPTURING OUTPUT
+   print "Creating ":JD3.FJ.PORTS
+   go 10
+end
+
+open JD3.FJ.LOG to F.LOG else
+   execute "CREATE.FILE ":JD3.FJ.LOG CAPTURING OUTPUT
+   print "Creating ":JD3.FJ.LOG
+   go 10
+end
+
+open JD3.FJ.USR to F.USR else
+   execute "CREATE.FILE ":JD3.FJ.USR CAPTURING OUTPUT
+   print "Creating ":JD3.FJ.USR
+   go 10
+end
+
+open JD3.FJ.CONFIG to F.CONFIG else
+   execute "CREATE.FILE ":JD3.FJ.CONFIG CAPTURING OUTPUT
+   print "Creating ": JD3.FJ.CONFIG
+   go 10
+end
+
+open JD3.FJ.MNGT to F.MNG else
+   execute "CREATE.FILE ":JD3.FJ.MNGT CAPTURING OUTPUT
+   print "Creating ":JD3.FJ.MNGT
+   go 10
+end
+*----------------------------------------------------------------------*
+print "*========================================*"
+print "JD3 Configuration Manager"
+print ""
+print "Run it once before launching JD3 in order to use"
+print "all the features"
+print ""
+print "Whenever you want type Q to quit without saving"
+print "or S to quit and save"
+print ""
+print "To use default parameter when available, just press [RETURN]"
+print ""
+print "*========================================*"
+*----------------------------------------------------------------------*
+print "Which server do you want to configure (default=20002)"
+input server
+if server="S" or server="Q" then stop
+if server="" or not(server match "0N") then server=20002
+read config.rec from F.CONFIG,server else config.rec=""
+
+print "Child to start (default=3 actual=":config.rec<1>:")"
+input rep; gosub 200; if rep="" or not(rep match "0N") then rep=config.rec<1>
+if rep="" then rep=3
+config.rec<1>=rep
+
+print "First port for child (default=30000 actual=":config.rec<2>:")"
+input rep; gosub 200; if rep="" or not(rep match "0N") then rep=config.rec<2>
+if rep="" then rep=30000
+config.rec<2>=rep
+
+print "Minimum children processes"
+print "will return to this state, when no activity (default=3 actual=":config.rec<3>:")"
+input rep; gosub 200; if rep="" or not(rep match "0N") then rep=config.rec<3>
+if rep="" then rep=3
+config.rec<3>=rep
+
+print "Maximum children started (default=5 actual=":config.rec<4>:")"
+input rep; gosub 200; if rep="" or not(rep match "0N") then rep=config.rec<4>
+if rep="" then rep=5
+config.rec<4>=rep
+
+print "Timeout before stopping a running process, in minutes (default=10 actual=":config.rec<5>:")"
+input rep; gosub 200; if rep="" or not(rep match "0N") then rep=config.rec<5>
+if rep="" then rep=10
+config.rec<5>=rep
+
+print "Maximum idle time before stopping unused process, in minutes"
+print "it happens when more processes are started (default=30 actual=":config.rec<6>:")"
+input rep; gosub 200; if rep="" or not(rep match "0N") then rep=config.rec<6>
+if rep="" then rep=30
+config.rec<6>=rep
+
+print "Delay between port management, in minutes "
+print "Should be less or equal to the 2 previous parameters (default=30 actual=":config.rec<8>:")"
+input rep; gosub 200; if rep="" or not(rep match "0N") then rep=config.rec<8>
+if rep="" then rep=30
+config.rec<8>=rep
+
+print "Maximum unreleased ports to avoid (D3NT problem) (actual=":config.rec<7>:")"
+input rep; gosub 200; if rep="" or not(rep match "0N") then rep=config.rec<7>
+config.rec<7>=rep
+
+badip=config.rec<9>
+convert vm to ";" in badip
+print "IP addresses to block connection from (actual=":badip:")"
+print "For multiples IPs just separate them with ;"
+input rep; gosub 200; if rep="" then rep=badip
+convert ";" to vm in rep
+config.rec<9>=rep
+
+ipok=config.rec<10>
+convert vm to ";" in ipok
+print "IP addresses to allow connection from (actual=":ipok:")"
+print "For multiples IPs just separate them with ;"
+input rep; gosub 200; if rep="" then rep=ipok
+convert ";" to vm in rep
+config.rec<10>=rep
+
+
+
+100    *
+write config.rec on F.CONFIG,server
+
+print "Writing config...done"
+print
+stop
+
+
+*----------------------------------------------------------------------*
+* "S" to save and quit / "Q" to quit without saving
+*----------------------------------------------------------------------*
+
+200    *
+if rep="S" then go 100
+if rep="Q" then stop
+return
+end

@@ -1,0 +1,551 @@
+*
+* D3Server : The main program that know which port are free or not
+* Copyright (c) 2000 Christophe Marchal
+*
+* This program is free software; you can redistribute it and/or
+* modify it under the terms of the GNU General Public License
+* as published by the Free Software Foundation; either version 2
+* of the License, or any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* along with this program; if not, write to the Free Software
+* Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+*
+
+*----------------------------------------------------------------------*
+* The main program that know which port are free or not
+*  These file must exist in the account
+*   FJ.PORTS : file used by the d3server to know which thread are free
+*
+*   Command line is : d3server [-h] [-port xxxx] [-d] [-c xxx] [-cp xxxx]
+*
+*   parameters : -port xxxx : starting to listen on the port xxxx
+*                -d         : for debugging
+*                -c xxx     : number of child to start
+*                -cp xxxx   : starting port for the child,
+*                             increase by 1 for each child
+*                -h         : see help
+*
+* Bryan Buchanan, wEbbTide Systems Pty Ltd
+*    March, 1997
+* Christophe Marchal
+*    Novembre, 2002
+* Cedric Fontaine
+* Marc Dubois
+*    June, 2003
+*    If the ServerRec in F-Ports is missing - Shutdown this process.
+* Marc Dubois
+*    August, 2003
+*    Port management.
+*
+* Version 0.10
+*----------------------------------------------------------------------*
+
+portMngmnt = 0
+include equates
+equ bufmark to char(1)
+
+*---------------------------------------------------------------------
+* Init equates and variables
+*---------------------------------------------------------------------
+* Default value for the server port
+equ WELL.KNOWN.PORT to 20002
+
+* Default value for the starting child port
+equ CHILD.PORTS TO 30000
+
+* Default value for the number of child
+equ PHANTOMS to 2
+
+* Number of try to get a free port
+equ MAXTRY to 5
+
+equ am to char(254), vm to char(253), esc to char(27)
+
+my.port = SYSTEM(18)
+   buffer = space(10)
+   configFile = 1
+   logMngt = 1
+*---------------------------------------------------------------------
+* Get TCL parameters
+*---------------------------------------------------------------------
+   tclread tcl.com
+   convert ' ' to am in tcl.com
+
+* Show help if asked
+   locate('-h', tcl.com;pos.help) then
+      gosub help
+      stop
+   end
+
+* Find the port for the server
+   locate('-port', tcl.com;pos.port) then
+      ser.port = tcl.com<pos.port + 1> + 0
+   end else
+      ser.port = WELL.KNOWN.PORT
+   end
+
+* Fix the debug flag
+   debug = 0
+   locate('-d', tcl.com;pos.debug) then
+      debug = 1
+   end
+
+* Find the number of child to start
+   nbchild = PHANTOMS
+   locate('-c', tcl.com;pos.child) then
+      nbchild = tcl.com<pos.child + 1> + 0
+   end
+
+* Find the starting port for child
+   childport = CHILD.PORTS
+   locate('-cp', tcl.com;pos.child.port) then
+      childport = tcl.com<pos.child.port +1> + 0
+   end
+
+*---------------------------------------------------------------------
+* Open files
+*---------------------------------------------------------------------
+   open JD3.FJ.PORTS to F.PORTS else  
+      stop "Error opening file ":JD3.FJ.PORTS  
+   end
+
+   open JD3.FJ.CONFIG to F.CONFIG else  
+      configFile = 0
+   end
+
+   if configFile then
+      open JD3.FJ.MNGT to F.MNG else  
+         logMngt = 0
+      end
+   end
+
+*---------------------------------------------------------------------
+* Setup default from parameters in the Config file
+*---------------------------------------------------------------------
+   read config.rec from F.CONFIG, ser.port else
+      configFile = 0
+           maxChild = 0 
+   end
+
+   if configFile then
+      nbchild = config.rec<1>  ;* Number of children to start
+      childport = config.rec<2>  ;* Start port no. (for children)
+      minChild = config.rec<3>  ;* Minimum number of children
+      maxChild = config.rec<4>  ;* Maximum number of children
+      maxProcTime = config.rec<5> * 60  ;* Maximum number of minutes to allow any process
+      maxIdleTime = config.rec<6> * 60  ;* Maximum idle minutes for any process (before it is stopped)
+      maxPortCnt = config.rec<7>  ;* Maximum unreleased ports to avoid (D3NT problem)
+      mngmntInt = config.rec<8> * 60  ;* Interval time in minutes between port management calls
+      ipBlock = config.rec<9>  ;* Forbidden IP
+      ipAccept = config.rec<10>  ;* Allowed IP connection
+
+      if maxChild < minChild then
+         stop 'Maxchild should be more than MinChild'
+      end
+
+      if maxChild < nbchild then
+         stop 'Maxchild should be more than Child to start'
+      end
+
+   end
+
+   if maxChild + 0 = 0 then maxChild = nbchild
+*---------------------------------------------------------------------
+* Validate parameters
+*---------------------------------------------------------------------
+   if nbchild <= 0 then
+      stop "No child to start"
+   end
+
+   if childport <= 0 then
+      stop 'Child port incorrect ':childport
+   end
+
+* Make life easy
+   childport = childport - 1
+
+*---------------------------------------------------------------------
+* Create the main server socket
+*---------------------------------------------------------------------
+   sock = CREATE.SERVER.SOCKET("", ser.port)  
+   IF STATUS() THEN 
+      CLOSE.SOCKET fd  
+      stop "D3Serveur : Error binding to port ":ser.port
+   end
+
+*---------------------------------------------------------------------
+* Fix status for the server
+*---------------------------------------------------------------------
+   status = "server"  ;* Type of thread
+   status<2> = ser.port  ;* IP Port
+   status<3> = TIME():"#":DATE()  ;* startup time
+   status<4> = STATUS.STARTING  ;* Status
+   status<5> = ""  ;* IP connected
+   status<6> = ""  ;* List of PID of all child
+   status<7> = oconv('u', 'U50BB')  ;* User that launch child, used by j-stop
+   status<8> = ""  ;* List of available port for each child
+   status<10> = TIME():"#":DATE()  ;* last transaction time
+   status<11> = ""  ;* List of the port no. for each child
+   status<12> = TIME()  ;* Time check for port managemnt
+   status<13> = 0  ;* 1 = port managemnt in progress
+   status<14> = ""  ;* List of handle no. for each child
+*   status<15> = sock  ;* Handle no. for this server
+   write status on F.PORTS, my.port
+
+   if debug then print "Serveur started on pid ":my.port
+
+*---------------------------------------------------------------------
+* Init phantom parameters
+*---------------------------------------------------------------------
+
+*---------------------------------------------------------------------
+* Start the threads
+*---------------------------------------------------------------------
+   if debug then print "Starting ":nbchild:" threads..."
+
+   for i = 1 to nbchild
+      next.port = childport + i
+      if debug then print "One thread started on port ":next.port
+      gosub 100
+   next i
+
+*---------------------------------------------------------------------
+* Waiting incoming connection
+*---------------------------------------------------------------------
+   if debug then print "Server ready on port ":ser.port
+
+
+   loop
+   while 1 do
+      portMngmnt = 0
+
+*
+      readv server from F.PORTS, my.port, 2 else
+         crt 'Server must be shutdown.'
+      end
+*
+
+      writev STATUS.WAITING on F.PORTS, my.port, 4  
+      writev "" on F.PORTS, my.port, 5
+      writev TIME():"#":DATE() on F.PORTS, my.port, 10
+
+      fd = ACCEPT.SOCKET.CONNECTION(sock, 0)  
+      IF NOT(STATUS()) THEN 
+
+         addr = SOCKET.INFO(fd,3) 
+
+* Check authorization for this IP
+         if configFile then
+            if ipBlock then
+               locate(addr, ipBlock, 1;R) then
+                  if debug then print "New connection blocked from ":addr
+                  go 50
+               end
+            end
+
+            if ipAccept then
+               locate(addr, ipAccept, 1;R) else
+                  if debug then print "New connection not accepted from ":addr
+                  go 50
+               end
+            end
+         end
+
+         if debug then print "New connection from ":addr
+
+         read serverRec from F.PORTS, my.port else
+            CLOSE.SOCKET fd  
+            crt 'The server is shutting down......'
+            stop
+         end
+
+* Change status of this thread
+
+         serverRec<4> = STATUS.CONNECTED  
+         serverRec<5> = addr
+         serverRec<10> = TIME():"#":DATE()
+         write serverRec on F.PORTS, my.port
+
+         try = 0
+         next.port = ""
+
+10
+         if try < MAXTRY then
+            try += 1
+
+*-----------------------------------------------------
+* find a free port in the list
+*-----------------------------------------------------
+            readu free.ports from F.PORTS, my.port locked
+               sleep 1  
+               goto 10
+            end else  
+               null  
+            end
+
+            currChildCnt = dcount(free.ports<8>, @vm)  ;* get number of child processes
+
+if debug then print "currChildCnt ":currChildCnt
+            for cpt.free = 1 to currChildCnt while next.port = ""
+               if free.ports<8, cpt.free> # "" then
+* Check if child not killed by hand
+IF 3 = 3 THEN
+*                  if oconv(free.ports<6, cpt.free>, "TPIBS;X;;7") # "" then
+                     next.port = free.ports<8, cpt.free>
+                  end
+               end
+            next cpt.free
+
+            release F.PORTS, my.port
+
+            if next.port = '' then
+               if debug then print "No more free port"
+
+*-----------------------------------------------------
+* Critical status - launch 2 new child processes
+*-----------------------------------------------------
+               if configFile then
+                  if currChildCnt < maxChild then
+                     nbnewChild = maxChild - currChildCnt
+                     if nbnewChild > 2 then nbnewChild = 2
+                     for newChild = 1 to nbnewChild
+                        next.port = free.ports<8, currChildCnt> + newChild
+                        gosub 100
+                     next newChild
+                     sleep 1  
+                     goto 10
+                  end else
+                     if debug then print "No ports available - Maximum try reached"
+                     next.port = -1
+                  end
+                  portMngmnt = 1
+               end
+            end
+
+         end else
+            if debug then print "No ports available - Maximum try reached"
+            next.port = -1
+         end
+
+*------------------------------------------------------------
+* Send the number of port to the client, if we got one
+*------------------------------------------------------------
+         if next.port # "" then
+            if next.port < 0 then
+               buffer = "-":oconv(abs(next.port), "mr%7")
+            end else
+               buffer = oconv(next.port, 'mr%8')
+            end
+            if debug then print "Connection client on ":next.port
+            SRES = WRITE.SOCKET(fd, buffer, 0, 0)  
+
+*-------------------------------------------------------------
+* Port management
+*-------------------------------------------------------------
+            readv mngmntInProcess from F.PORTS, my.port, 13 else null  
+            if configFile and not(mngmntInProcess) then
+               if next.port = -1 then
+*           Critical
+                  portMngmnt = 1
+                  if debug then print 'critical status, no available ports'
+                  gosub 100
+                  writev 1 on F.PORTS, my.port, 13
+               end else
+
+                  freeCnt = 0
+                  fromPort = cpt.free
+
+                  for cpt.free = fromPort to currChildCnt while freeCnt < 3
+
+                     if free.ports<8, cpt.free> # "" then
+*                 Check if child not killed by hand
+IF 3 = 4 THEN
+*                        if oconv(free.ports<6, cpt.free>, "TPIBS;X;;7") # "" then
+                           next.port = free.ports<8, cpt.free> + 0
+                           freeCnt += 1
+                        end
+                     end
+                  next cpt.free
+
+                  if freeCnt < 1 and nbchild > 2 then
+*              Critical status reached - There is only one available port.
+                     portMngmnt = 1
+                  end
+
+                  readv mngmntLastRun from F.PORTS, my.port, 12 else null  
+
+                  if (time() - mngmntLastRun) > mngmntInt and time() > mngmntInt then
+
+*              Time to call port management
+                     if debug then print 'Time to call port management....'
+
+                     portMngmnt = 1
+                  end else
+                     if mngmntLastRun > time() then
+                        writev time() on F.PORTS, my.port, 12
+                     end
+                  end
+                  if portMngmnt then
+                     gosub 800  ;* Call port management through child
+                     if not(mngmntStat) then  ;* was the child listening?
+                        gosub 100
+                     end
+                     writev 1 on F.PORTS, my.port, 13
+                     portMngmnt = 0
+                  end
+               end
+            end
+         end
+
+50         *
+         CLOSE.SOCKET fd  
+
+      end
+   repeat
+
+   stop
+
+*----------------------------------------------------------------------
+* Start a thread as a phantom
+*---------------------------------------------------------------------
+100
+   if portMngmnt then
+
+*---------------------------------------------------------------------
+* Log entry in F.MNG file
+*---------------------------------------------------------------------
+      if logMngt then
+         read logNo from F.MNG, 0 else
+            write 0 on F.MNG, 0
+         end
+         logNo += 1
+         write logNo on F.MNG, 0
+
+         logKey = logNo"R(%4)"
+         logRec = ''
+         logRec<1> = ser.port
+         logRec<2> = date()
+         logRec<3> = time()
+         logRec<4> = "D3server - Critical status, no ports available."
+         write logRec on F.MNG, logKey
+      end
+
+      stmnt = 'd3portmng'
+      stmnt := ' -port ':ser.port
+      stmnt := ' -s ':my.port
+      if debug then
+         stmnt := ' -d'
+      end
+      orig.line = stmnt
+
+      if debug then print "Starting port management with ":orig.line
+      portMngmnt = 0
+   end else
+      orig.line = 'D3CLIENT -port ':next.port:' -s ':my.port
+      if debug then print "Starting child with ":orig.line
+   end
+
+
+
+* this oconv start the phantom
+   EXECUTE "PHANTOM ":orig.line 
+
+   return
+
+*-----------------------------------------------------------------------
+* Init for the phantom parameters
+*-----------------------------------------------------------------------
+200
+   opts = 'sm'
+   zline = ''
+   leg = ''
+   thdr = ''
+   cs = 'case (fs'
+
+   term = oconv('', 'u4')
+   pterm = term<3>:',':term<5>
+   term = delete(term, 3)
+   term = delete(term, 4)
+   convert am to ',' in term
+   term = 'term ':term:pterm
+
+   queue = system(31)
+   assignment = 'sp-assign f':queue:'hs'
+
+   user.line = oconv('p', 'U50BB')
+   cur.user = oconv('u', 'U50BB')
+   cur.md = oconv('a', 'U50BB')
+
+   if count(cur.user, '*') then cur.user = field(cur.user, '*', 1)
+   user.id = cur.user
+   passwd = esc
+   md.id = cur.md
+   mdpasswd = esc
+
+   return
+
+*------------------------------------------------------------------------
+* Show help with all options available
+*------------------------------------------------------------------------
+help: ; print
+   print "   Command line is : d3server [-h] [-port xxxx] [-d] [-c xxx] [-cp xxxx]"
+   print
+   print "   parameters : -port xxxx : starting to listen on the port xxxx"
+   print "                -d         : for debugging"
+   print "                -c xxx     : number of child to start"
+   print "                -cp xxxx   : starting port for the child,"
+   print "                             increase by 1 for each child"
+   print "                -h         : see this help message"
+   print
+
+   return
+
+*--------------------------------------------------------------------
+* Request the child to run the port managemnt subroutine
+*--------------------------------------------------------------------
+800
+   mngmntStat = 0
+*---------------------------------------------------------------------
+* Log entry in F.MNG file
+*---------------------------------------------------------------------
+   if logMngt then
+      read logNo from F.MNG, 0 else
+         write 0 on F.MNG, 0
+      end
+      logNo += 1
+      write logNo on F.MNG, 0
+
+      logKey = logNo"R(%4)"
+      logRec = ''
+      logRec<1> = ser.port
+      logRec<2> = date()
+      logRec<3> = time()
+      logRec<4> = "D3Management from d3client asked"
+      write logRec on F.MNG, logKey
+   end
+* Create socket
+
+* Connect to port
+   msock = OPEN.SOCKET('localhost', next.port, 1)  
+   IF STATUS() THEN  
+      goto 899
+   end
+
+   buffer = 4"R(%8)"
+   SRES = WRITE.SOCKET(msock, buffer, 0, 0)  
+   buffer = CP.MNGMNT.AMC:bufmark
+   SRES = WRITE.SOCKET(msock, buffer, 0, 0)  
+
+   mngmntStat = 1
+
+899
+   CLOSE.SOCKET msock  
+   return
+
+end

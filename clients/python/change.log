@@ -1,0 +1,4 @@
+version 0.3 :
+- Bug in D3Item Class (report from Jose Ernesto Suarez)
+version 0.2 :
+  - First release of this library, workes well ;-)

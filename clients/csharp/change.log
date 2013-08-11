@@ -1,0 +1,5 @@
+version 0.1 :
+  - First release, created by Peter Otmar (Potmar@liv.asn.au)
+  
+version 0.2 :
+ - D3 VBODBC compatible calls to extract, insert, replace and delete in the from of brExtractStr(), brReplaceStr(), brInsertStr() and brDeleteStr() by Gene Buckle geneb@deltasoft.com
